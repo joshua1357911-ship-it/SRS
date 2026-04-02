@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SRS Flashcard Mastery</title>
+    
+    <!-- PWA & Mobile App Meta Tags (行動裝置原生體驗標籤) -->
+    <meta name="theme-color" content="#4f46e5">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="SRS Mastery">
+    <link rel="apple-touch-icon" href="https://placehold.co/192x192/4f46e5/ffffff?text=SRS">
+    
+    <!-- 動態 Manifest 佔位符 -->
+    <link id="pwa-manifest" rel="manifest" href="">
+
+    <!-- Tailwind CSS (樣式引擎) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Phosphor Icons (輕量級現代圖示庫) -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <!-- React & ReactDOM (核心框架) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel (在瀏覽器中即時編譯 JSX) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* 補足 Tailwind Arbitrary Values 無法完美處理的 3D 透視效果 */
+        .perspective-1000 { perspective: 1000px; }
+        /* 防止 iOS 點擊閃爍與橡皮筋滾動效果 */
+        body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+    </style>
+</head>
+<body class="bg-slate-50 font-sans text-slate-800">
+    
+    <div id="root"></div>
+
+    <script type="text/javascript">
+        // 動態生成 PWA Manifest (讓手機辨識為可安裝 App)
+        const manifestData = {
+            name: "SRS Flashcard Mastery",
+            short_name: "SRS Mastery",
+            start_url: window.location.href,
+            display: "standalone",
+            background_color: "#f8fafc",
+            theme_color: "#4f46e5",
+            icons: [{
+                src: "https://placehold.co/192x192/4f46e5/ffffff?text=SRS",
+                sizes: "192x192",
+                type: "image/png"
+            }, {
+                src: "https://placehold.co/512x512/4f46e5/ffffff?text=SRS",
+                sizes: "512x512",
+                type: "image/png"
+            }]
+        };
+        const manifestBlob = new Blob([JSON.stringify(manifestData)], { type: 'application/json' });
+        document.getElementById('pwa-manifest').setAttribute('href', URL.createObjectURL(manifestBlob));
+    </script>
+
+    <!-- 核心邏輯區塊 -->
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const defaultCards = [
+          {
+            front: "ability ; the fact that somebody/something is able to do something",
+            back: "ability noun /əˈbɪləti/ . 能力(中文翻譯), 詞性變化 able adjective /ˈeɪbl/. 能夠，有能力的(中文翻譯), 例句: People with the disease may lose their ability to communicate.",
+            interval: 0, repetition: 0, efactor: 2.5, nextReview: Date.now()
+          },
+          {
+            front: "able ; to have the skill, intelligence, or opportunity needed to do something",
+            back: "able adjective /ˈeɪbl/ . 能夠的，有能力的(中文翻譯), 詞性變化 ability noun /əˈbɪləti/. 能力(中文翻譯), 例句: You must be able to speak French for this job.",
+            interval: 0, repetition: 0, efactor: 2.5, nextReview: Date.now()
+          }
+        ];
+
+        function App() {
+          const [cards, setCards] = useState(defaultCards);
+          const [isFlipped, setIsFlipped] = useState(false);
+          const [autoRead, setAutoRead] = useState(true);
+          const [currentTime, setCurrentTime] = useState(Date.now());
+          
+          const [sessionStats, setSessionStats] = useState({ again: 0, hard: 0, good: 0, easy: 0 });
+          const fileInputRef = useRef(null);
+
+          useEffect(() => {
+            const timer = setInterval(() => setCurrentTime(Date.now()), 10000);
+            return () => clearInterval(timer);
+          }, []);
+
+          const dueCards = cards.filter(c => c.nextReview <= currentTime).sort((a, b) => a.nextReview - b.nextReview);
+          const currentCard = dueCards.length > 0 ? dueCards[0] : null;
+
+          const formatInterval = (minutes) => {
+            if (minutes === 0) return 'Now';
+            if (minutes < 60) return `< ${Math.max(1, Math.round(minutes))}m`;
+            if (minutes < 1440) return `${Math.round(minutes / 60)}h`;
+            return `${Math.round(minutes / 1440)}d`;
+          };
+
+          const getNextIntervals = (card) => {
+            if (!card) return {};
+            let { interval, repetition, efactor } = card;
+            const againInt = 0; 
+            const hardInt = interval === 0 ? 5 : Math.max(1, interval * 1.2);
+            const goodInt = repetition === 0 ? 10 : (repetition === 1 ? 1440 : Math.round(interval * efactor));
+            const easyInt = repetition === 0 ? 5760 : Math.round(interval * efactor * 1.3);
+            return {
+              again: formatInterval(againInt), hard: formatInterval(hardInt), good: formatInterval(goodInt), easy: formatInterval(easyInt)
+            };
+          };
+
+          const previewIntervals = getNextIntervals(currentCard);
+
+          const handleSRS = (grade) => {
+            if (!currentCard) return;
+            setSessionStats(prev => ({ ...prev, [grade]: prev[grade] + 1 }));
+
+            const updatedCards = [...cards];
+            const cardIndex = cards.findIndex(c => c === currentCard);
+            let { interval, repetition, efactor } = currentCard;
+
+            if (grade === 'again') {
+              repetition = 0; interval = 0; efactor = Math.max(1.3, efactor - 0.2);
+            } else if (grade === 'hard') {
+              interval = interval === 0 ? 5 : Math.max(1, interval * 1.2); efactor = Math.max(1.3, efactor - 0.15);
+            } else if (grade === 'good') {
+              interval = repetition === 0 ? 10 : (repetition === 1 ? 1440 : Math.round(interval * efactor)); repetition += 1;
+            } else if (grade === 'easy') {
+              interval = repetition === 0 ? 5760 : Math.round(interval * efactor * 1.3); repetition += 1; efactor += 0.15;
+            }
+
+            const nextReview = grade === 'again' ? 0 : Date.now() + interval * 60 * 1000;
+            updatedCards[cardIndex] = { ...currentCard, interval, repetition, efactor, nextReview };
+
+            setCards(updatedCards);
+            setIsFlipped(false);
+            setCurrentTime(Date.now()); 
+          };
+
+          const extractSpeechText = useCallback((text, isBack) => {
+            if (!text) return "";
+            const wordMatch = text.match(/^([a-zA-Z.-]+)/);
+            const mainWord = wordMatch ? wordMatch[1] : ''; 
+            const spelledWord = mainWord.split('').join(', ');
+            
+            if (!isBack) {
+              let cleanText = text.replace(/;/g, '...').replace(/[\u4e00-\u9fa5（）()]/g, '');
+              let explanation = cleanText.substring(mainWord.length).trim();
+              return `${mainWord}... ${spelledWord}... ${mainWord} ${explanation}`;
+            } else {
+              let exampleMatch = text.match(/例句\s*[:：]\s*([a-zA-Z0-9\s,.'"?!-]+)/i);
+              if (exampleMatch && exampleMatch[1]) {
+                 return `${mainWord}... ${spelledWord}... ${mainWord}... ${exampleMatch[1].trim()}`;
+              }
+              return `${mainWord}... ${spelledWord}... ${mainWord}`;
+            }
+          }, []);
+
+          const speak = useCallback((text, isBack) => {
+            if (!autoRead) return;
+            window.speechSynthesis.cancel();
+            const speechText = extractSpeechText(text, isBack);
+            const utterance = new SpeechSynthesisUtterance(speechText);
+            utterance.lang = 'en-US'; 
+            utterance.rate = 0.85; 
+            window.speechSynthesis.speak(utterance);
+          }, [autoRead, extractSpeechText]);
+
+          useEffect(() => {
+            if (!currentCard) return;
+            const textToProcess = isFlipped ? currentCard.back : currentCard.front;
+            speak(textToProcess, isFlipped);
+            return () => window.speechSynthesis.cancel();
+          }, [currentCard, isFlipped, speak]);
+
+          const parseCSV = (text) => {
+            const result = [];
+            let row = []; let inQuotes = false; let currentValue = '';
+            for (let i = 0; i < text.length; i++) {
+              const char = text[i];
+              if (char === '"') inQuotes = !inQuotes;
+              else if (char === ',' && !inQuotes) { row.push(currentValue.trim()); currentValue = ''; } 
+              else if (char === '\n' && !inQuotes) {
+                row.push(currentValue.trim());
+                if (row.length >= 2) result.push({ front: row[0], back: row[1], interval: 0, repetition: 0, efactor: 2.5, nextReview: Date.now() });
+                row = []; currentValue = '';
+              } else currentValue += char;
+            }
+            if (currentValue) row.push(currentValue.trim());
+            if (row.length >= 2) result.push({ front: row[0], back: row[1], interval: 0, repetition: 0, efactor: 2.5, nextReview: Date.now() });
+            return result;
+          };
+
+          const handleFileUpload = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const content = e.target.result;
+              const parsedCards = parseCSV(content);
+              if (parsedCards.length > 0) {
+                setCards(parsedCards); setIsFlipped(false);
+                setSessionStats({ again: 0, hard: 0, good: 0, easy: 0 });
+              } else alert("Unable to parse CSV.");
+            };
+            reader.readAsText(file); 
+          };
+
+          const handleManualRead = (e) => {
+            e.stopPropagation(); 
+            if (currentCard) speak(isFlipped ? currentCard.back : currentCard.front, isFlipped);
+          };
+
+          if (cards.length === 0) return <div className="flex justify-center items-center h-screen bg-gray-100 font-sans">No data available.</div>;
+
+          const progressPercentage = ((cards.length - dueCards.length) / cards.length) * 100;
+          const totalInteractions = sessionStats.again + sessionStats.hard + sessionStats.good + sessionStats.easy;
+
+          return (
+            <div className="min-h-screen bg-slate-50 flex flex-col items-center py-6 px-4 font-sans text-slate-800">
+              
+              <div className="w-full max-w-3xl bg-white p-4 rounded-xl shadow-sm mb-4 flex flex-col sm:flex-row justify-between items-center gap-4 border border-slate-200">
+                <h1 className="text-xl font-bold text-indigo-900 tracking-tight flex items-center gap-2">
+                  <i className="ph-fill ph-circuitry text-indigo-600 text-2xl"></i>
+                  SRS Mastery
+                </h1>
+                
+                <div className="flex items-center gap-4">
+                  <button onClick={() => setAutoRead(!autoRead)} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${autoRead ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>
+                    {autoRead ? <i className="ph-bold ph-speaker-high text-[18px]"></i> : <i className="ph-bold ph-speaker-slash text-[18px]"></i>}
+                    <span className="hidden sm:inline">{autoRead ? 'Auto-Read On' : 'Auto-Read Off'}</span>
+                  </button>
+
+                  <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-sm active:scale-95">
+                    <i className="ph-bold ph-upload-simple text-[18px]"></i>
+                    Import CSV
+                  </button>
+                  <input type="file" accept=".csv" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+                </div>
+              </div>
+
+              <div className="w-full max-w-3xl flex flex-wrap justify-between items-center mb-6 px-2 text-sm font-medium">
+                <div className="text-slate-500 flex items-center gap-2 mb-2 sm:mb-0">
+                  <i className="ph-fill ph-chart-line-up text-indigo-400 text-lg"></i>
+                  Telemetry: {totalInteractions}
+                </div>
+                <div className="flex gap-2">
+                  <span className="flex items-center gap-1 text-red-600 bg-red-100/70 border border-red-200 px-2 py-1 rounded-md shadow-sm"><i className="ph-bold ph-arrow-counter-clockwise"></i> {sessionStats.again}</span>
+                  <span className="flex items-center gap-1 text-orange-600 bg-orange-100/70 border border-orange-200 px-2 py-1 rounded-md shadow-sm"><i className="ph-fill ph-brain"></i> {sessionStats.hard}</span>
+                  <span className="flex items-center gap-1 text-emerald-600 bg-emerald-100/70 border border-emerald-200 px-2 py-1 rounded-md shadow-sm"><i className="ph-fill ph-check-circle"></i> {sessionStats.good}</span>
+                  <span className="flex items-center gap-1 text-blue-600 bg-blue-100/70 border border-blue-200 px-2 py-1 rounded-md shadow-sm"><i className="ph-fill ph-lightning"></i> {sessionStats.easy}</span>
+                </div>
+              </div>
+
+              {!currentCard ? (
+                <div className="w-full max-w-3xl bg-white p-12 rounded-2xl shadow-sm border border-slate-200 text-center flex flex-col items-center">
+                  <i className="ph-fill ph-check-circle text-[64px] text-emerald-500 mb-6"></i>
+                  <h2 className="text-3xl font-bold text-slate-800 mb-2">Review Complete!</h2>
+                  
+                  <div className="w-full max-w-md bg-slate-50 border border-slate-200 rounded-xl p-6 mt-6 mb-8">
+                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">Final Yield Report</h3>
+                    <div className="grid grid-cols-4 gap-4">
+                      <div className="flex flex-col items-center"><i className="ph-bold ph-arrow-counter-clockwise text-2xl text-red-400 mb-1"></i><span className="font-bold text-xl text-slate-700">{sessionStats.again}</span></div>
+                      <div className="flex flex-col items-center"><i className="ph-fill ph-brain text-2xl text-orange-400 mb-1"></i><span className="font-bold text-xl text-slate-700">{sessionStats.hard}</span></div>
+                      <div className="flex flex-col items-center"><i className="ph-fill ph-check-circle text-2xl text-emerald-400 mb-1"></i><span className="font-bold text-xl text-slate-700">{sessionStats.good}</span></div>
+                      <div className="flex flex-col items-center"><i className="ph-fill ph-lightning text-2xl text-blue-400 mb-1"></i><span className="font-bold text-xl text-slate-700">{sessionStats.easy}</span></div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="w-full max-w-3xl perspective-1000">
+                    <div className={`relative w-full h-[60vh] sm:h-[28rem] transition-transform duration-500 [transform-style:preserve-3d] ${isFlipped ? '[transform:rotateY(180deg)]' : ''}`}>
+                      {/* Front of Card */}
+                      <div className="absolute inset-0 w-full h-full bg-white rounded-2xl shadow-lg border border-slate-200 [backface-visibility:hidden] flex flex-col">
+                        <div className="px-4 pt-4 pb-2 border-b border-slate-100 flex justify-between items-center">
+                          <div className="flex-1 mr-4">
+                            <div className="flex justify-between text-[10px] sm:text-xs text-slate-400 font-semibold mb-1">
+                              <span>Due: {dueCards.length}</span>
+                              <span>{Math.round(progressPercentage)}%</span>
+                            </div>
+                            <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden"><div className="bg-indigo-500 h-full transition-all duration-300" style={{ width: `${progressPercentage}%` }}></div></div>
+                          </div>
+                          <button onClick={handleManualRead} className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"><i className="ph-bold ph-speaker-high text-[24px]"></i></button>
+                        </div>
+                        <div className="flex-1 flex items-center justify-center p-6 text-center overflow-y-auto">
+                          <p className="text-2xl sm:text-4xl font-extrabold text-slate-800 leading-relaxed whitespace-pre-wrap">{currentCard.front}</p>
+                        </div>
+                      </div>
+
+                      {/* Back of Card */}
+                      <div className="absolute inset-0 w-full h-full bg-indigo-50 rounded-2xl shadow-lg border border-indigo-100 [backface-visibility:hidden] [transform:rotateY(180deg)] flex flex-col">
+                        <div className="px-4 pt-4 pb-2 border-b border-indigo-200/50 flex justify-between items-center">
+                          <div className="flex-1 mr-4">
+                            <div className="flex justify-between text-[10px] sm:text-xs text-indigo-400 font-semibold mb-1">
+                              <span>Back</span>
+                              <span>{Math.round(progressPercentage)}%</span>
+                            </div>
+                            <div className="w-full bg-indigo-200/50 h-1.5 rounded-full overflow-hidden"><div className="bg-indigo-600 h-full transition-all duration-300" style={{ width: `${progressPercentage}%` }}></div></div>
+                          </div>
+                          <button onClick={handleManualRead} className="p-2 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-200/50 rounded-full transition-colors"><i className="ph-bold ph-speaker-high text-[24px]"></i></button>
+                        </div>
+                        <div className="flex-1 flex items-center justify-center p-6 text-center overflow-y-auto">
+                          <p className="text-xl sm:text-3xl font-bold text-indigo-950 leading-relaxed whitespace-pre-wrap">{currentCard.back}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="w-full max-w-3xl mt-6">
+                    {!isFlipped ? (
+                      <button onClick={() => setIsFlipped(true)} className="w-full py-4 bg-indigo-600 text-white rounded-xl shadow-md font-bold text-lg hover:bg-indigo-700 active:scale-[0.98] flex justify-center items-center gap-2">
+                        <i className="ph-bold ph-eye text-[22px]"></i> Show Answer
+                      </button>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-2 sm:gap-3 w-full">
+                        <button onClick={() => handleSRS('again')} className="flex flex-col items-center justify-center py-2 sm:py-3 bg-white border-2 border-red-100 text-red-500 rounded-xl active:scale-95 shadow-sm">
+                          <i className="ph-bold ph-arrow-counter-clockwise text-[24px] sm:text-[28px] mb-1"></i>
+                          <span className="font-bold text-xs sm:text-sm">Again</span><span className="text-[10px] sm:text-xs text-slate-400">{previewIntervals.again}</span>
+                        </button>
+                        <button onClick={() => handleSRS('hard')} className="flex flex-col items-center justify-center py-2 sm:py-3 bg-white border-2 border-orange-100 text-orange-500 rounded-xl active:scale-95 shadow-sm">
+                          <i className="ph-fill ph-brain text-[24px] sm:text-[28px] mb-1"></i>
+                          <span className="font-bold text-xs sm:text-sm">Hard</span><span className="text-[10px] sm:text-xs text-slate-400">{previewIntervals.hard}</span>
+                        </button>
+                        <button onClick={() => handleSRS('good')} className="flex flex-col items-center justify-center py-2 sm:py-3 bg-white border-2 border-emerald-100 text-emerald-500 rounded-xl active:scale-95 shadow-sm">
+                          <i className="ph-fill ph-check-circle text-[24px] sm:text-[28px] mb-1"></i>
+                          <span className="font-bold text-xs sm:text-sm">Good</span><span className="text-[10px] sm:text-xs text-slate-400">{previewIntervals.good}</span>
+                        </button>
+                        <button onClick={() => handleSRS('easy')} className="flex flex-col items-center justify-center py-2 sm:py-3 bg-white border-2 border-blue-100 text-blue-500 rounded-xl active:scale-95 shadow-sm">
+                          <i className="ph-fill ph-lightning text-[24px] sm:text-[28px] mb-1"></i>
+                          <span className="font-bold text-xs sm:text-sm">Easy</span><span className="text-[10px] sm:text-xs text-slate-400">{previewIntervals.easy}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
